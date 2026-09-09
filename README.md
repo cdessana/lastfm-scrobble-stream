@@ -1,127 +1,161 @@
-# Last.fm Standalone Data Collector & Kafka Producer
+# Last.fm Scrobble Stream
 
 > **Note:** The initial version of this project was developed with Google AI Studio as part of a hands-on exploration of the platform and its capabilities.
 
-A high-reliability, real-data collector that ingests live playback and scrobbles from the **Last.fm Audioscrobbler API** and publishes structured streaming events directly to an **Apache Kafka** cluster.
+A standalone, polling-based collector that retrieves real listening activity from the [Last.fm API](https://www.last.fm/api) and transforms it into events that can be inspected locally or published to Apache Kafka.
 
-Designed as an independent data ingestion producer for Apache Kafka learning projects, streaming analytics pipelines (Flink, Spark, Kafka Streams), or real-time event-driven architectures.
+This project was created for learning and experimentation with event-driven systems. It is intentionally separate from the Kafka infrastructure and from any downstream consumers or processing applications.
 
----
+## What this project does
 
-## 1. Project Purpose & Philosophy
+- Polls `user.getRecentTracks` for one or more Last.fm users.
+- Converts recent tracks and current playback data into a consistent event format.
+- Prevents duplicate events caused by repeated polling.
+- Displays collected events in a React dashboard through Server-Sent Events (SSE).
+- Runs without Kafka in dry-run mode.
+- Optionally publishes events to an externally managed Kafka cluster.
 
-- **Real Data Only:** All mock, random, synthetic, and hardcoded listening data have been completely removed. The pipeline operates exclusively against real Last.fm user streams.
-- **Standalone Producer:** This repository contains only the collector and Kafka producer integration. It does not contain Kafka brokers, zookeepers, Docker containers, consumers, or databases, preserving complete independence from your Kafka cluster infrastructure.
-- **Production-Grade Resilience:** Features automatic HTTP 429 rate-limit backoff, in-memory deduplication, non-blocking Kafka publishing, and graceful shutdown handling.
+The application uses real Last.fm data only. It does not fall back to mock, random, or synthetic listening data when the API is unavailable.
 
----
+## Architecture
 
-## 2. Architecture & Data Flow
-
-```
-[ Last.fm Audioscrobbler API v2.0 ]
-                │
-                │ HTTP Polling (user.getrecenttracks)
-                ▼
-      ┌───────────────────┐
-      │   LastFmClient    │ ◄─── Rate-Limiting & Exponential Backoff (429 handling)
-      └─────────┬─────────┘
-                │ Raw Track JSON
-                ▼
-      ┌───────────────────┐
-      │  CollectorEngine  │ ◄─── Round-robin user polling & cycle orchestration
-      └─────────┬─────────┘
-                │
-                ├───────────────────────────────────────┐
-                ▼                                       ▼
-     ┌──────────────────────┐               ┌───────────────────────┐
-     │  EventDeduplicator   │               │ Server-Sent Events    │
-     │  (Bounded FIFO ring) │               │ (SSE /api/stream)     │
-     └──────────┬───────────┘               └───────────┬───────────┘
-                │ Unique scrobbles                      │
-                ▼                                       ▼
-     ┌──────────────────────┐               ┌───────────────────────┐
-     │ KafkaScrobbleProducer│               │ Live Web Dashboard    │
-     │ (KafkaJS Producer)   │               │ (Telemetry & Filters) │
-     └──────────┬───────────┘               └───────────────────────┘
-                │
-                │ Partition Key: user.username
-                ▼
-[ External Apache Kafka Cluster ]
-(Topic: lastfm.scrobbles.raw)
+```mermaid
+flowchart LR
+    A[Last.fm API] -->|HTTP polling| B[Node.js collector]
+    B --> C[Normalize and deduplicate]
+    C --> D[React dashboard]
+    C --> E[External Kafka cluster]
 ```
 
-### Components:
-1. **`LastFmClient` (`src/collector/lastfm-client.ts`):** Handles HTTP communication with `ws.audioscrobbler.com/2.0/`, response normalization, and rate-limit backoffs.
-2. **`CollectorEngine` (`src/collector/engine.ts`):** Orchestrates polling across the configured user pool, tracking active play states and delegating to the deduplicator.
-3. **`EventDeduplicator` (`src/collector/deduplicator.ts`):** Employs a bounded FIFO cache to prevent republishing the same scrobble or `nowplaying` state across poll intervals.
-4. **`KafkaScrobbleProducer` (`src/collector/kafka-producer.ts`):** Connects to your external Kafka cluster via `kafkajs`, publishing structured `KafkaScrobbleEvent` messages keyed by username.
-5. **Real-Time Web UI (`src/App.tsx`):** Provides a visual dashboard to inspect live scrobbles, monitor Kafka connectivity, track specific artists, and inspect the raw Kafka JSON payloads.
+The repository contains two main parts:
 
----
+- **Node.js backend:** communicates with Last.fm, manages polling and deduplication, exposes the local HTTP API and publishes events to Kafka when enabled.
+- **React frontend:** displays collector status and events received from the backend. It does not access Last.fm or Kafka directly.
 
-## 3. Installation & Getting Started
+The Kafka brokers, topics, consumers, stream-processing applications and databases belong to a separate Kafka learning environment.
 
-### Prerequisites
-- Node.js 18.0.0 or higher
-- A Last.fm API Key ([Get a free API key here](https://www.last.fm/api/account/create))
-- An Apache Kafka broker (local, Dockerized, or cloud-hosted such as Confluent, Redpanda, or Aiven)
+### Main components
 
-### Step 1: Clone and Install Dependencies
+| Component | Responsibility |
+| --- | --- |
+| `LastFmClient` | Calls the Last.fm API and normalizes its responses. |
+| `CollectorEngine` | Coordinates polling for the configured users. |
+| `EventDeduplicator` | Prevents the same event from being emitted on consecutive polling cycles. |
+| `KafkaScrobbleProducer` | Publishes events to an external Kafka cluster when enabled. |
+| React dashboard | Receives events through SSE and provides a local inspection interface. |
+
+## Requirements
+
+- Node.js 18 or later
+- A [Last.fm API key](https://www.last.fm/api/account/create)
+- An Apache Kafka cluster only when Kafka publishing is enabled
+
+## Getting started
+
+Clone the repository and install the dependencies:
+
 ```bash
 git clone <repository-url>
-cd lastfm-kafka-collector
+cd lastfm-scrobble-stream
 npm install
 ```
 
-### Step 2: Configure Environment Variables
-Copy the template configuration:
+Create your local configuration:
+
 ```bash
 cp .env.example .env
 ```
-Edit `.env` and provide your credentials (see section below).
 
-### Step 3: Run the Collector
-To run in development mode (Express server + Vite UI on port 3000):
+At minimum, provide a Last.fm API key and one or more usernames:
+
+```env
+LASTFM_API_KEY=your_lastfm_api_key
+LASTFM_USERS=your_lastfm_username
+KAFKA_PRODUCER_ENABLED=false
+```
+
+Never commit your `.env` file or real credentials.
+
+Start the application in development mode:
+
 ```bash
 npm run dev
 ```
 
-To build and run in production mode:
-```bash
-npm run build
-npm start
+This starts the Node.js server and the React interface. The default HTTP port is `3000`.
+
+## Configuration
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `LASTFM_API_KEY` | Yes | — | Last.fm Audioscrobbler API key. |
+| `LASTFM_USERS` | Yes | — | Comma-separated usernames to monitor. |
+| `LASTFM_POLL_INTERVAL_MS` | No | `10000` | Interval between polling cycles in milliseconds. Minimum: `2000`. |
+| `LASTFM_LIMIT` | No | `5` | Number of recent tracks requested per user. Range: `1`–`50`. |
+| `KAFKA_PRODUCER_ENABLED` | No | `false` | Enables publishing to Kafka. |
+| `KAFKA_BOOTSTRAP_SERVERS` | When Kafka is enabled | `localhost:9092` | Comma-separated Kafka broker addresses. |
+| `KAFKA_TOPIC` | No | `lastfm.scrobbles` | Destination topic. |
+| `KAFKA_CLIENT_ID` | No | `lastfm-collector-producer` | Producer identifier shown in Kafka logs. |
+| `KAFKA_COMPRESSION` | No | `gzip` | Compression codec: `none`, `gzip`, `snappy`, `lz4` or `zstd`. |
+| `KAFKA_ACKS` | No | `-1` | Kafka acknowledgement level. |
+| `KAFKA_PRODUCER_RETRIES` | No | `5` | Retry limit for transient publishing failures. |
+| `KAFKA_PRODUCER_TIMEOUT_MS` | No | `30000` | Kafka request timeout in milliseconds. |
+| `KAFKA_SECURITY_PROTOCOL` | No | `PLAINTEXT` | Connection protocol: `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT` or `SASL_SSL`. |
+| `KAFKA_SASL_MECHANISM` | For SASL | — | `plain`, `scram-sha-256` or `scram-sha-512`. |
+| `KAFKA_SASL_USERNAME` | For SASL | — | Authentication username. |
+| `KAFKA_SASL_PASSWORD` | For SASL | — | Authentication password or secret. |
+| `PORT` | No | `3000` | HTTP server port. |
+
+## Running modes
+
+### Dry-run mode
+
+Dry-run mode is the default and does not require Kafka:
+
+```env
+LASTFM_API_KEY=your_lastfm_api_key
+LASTFM_USERS=your_lastfm_username
+KAFKA_PRODUCER_ENABLED=false
 ```
 
----
+The collector continues to retrieve and deduplicate real Last.fm data. Generated events are logged and sent to the dashboard, but no connection to Kafka is attempted.
 
-## 4. Configuration & Environment Variables
+Use this mode to validate the Last.fm integration and inspect the event payload before connecting the project to Kafka.
 
-All settings are configured via environment variables or a `.env` file at the root:
+### Kafka producer mode
 
-| Variable | Type | Default | Description |
-|---|---|---|---|
-| `LASTFM_API_KEY` | `string` | *(empty)* | **Required.** Your Last.fm Audioscrobbler API key. |
-| `LASTFM_USERS` | `string` | `rj,muesli` | Comma-separated list of Last.fm usernames to poll. |
-| `LASTFM_POLL_INTERVAL_MS` | `number` | `10000` | Polling interval per cycle in milliseconds (min: 2000). |
-| `KAFKA_PRODUCER_ENABLED` | `boolean` | `false` | Enable/disable sending events to Kafka (set to `true` to publish). |
-| `KAFKA_BROKERS` | `string` | `localhost:9092` | Comma-separated list of Kafka broker endpoints. |
-| `KAFKA_CLIENT_ID` | `string` | `lastfm-collector` | Client ID identifying this producer in Kafka logs. |
-| `KAFKA_TOPIC` | `string` | `lastfm.scrobbles.raw` | Kafka topic where scrobble events are published. |
-| `KAFKA_COMPRESSION` | `string` | `gzip` | Message compression codec (`none`, `gzip`, `snappy`, `lz4`). |
-| `KAFKA_PRODUCER_RETRIES` | `number` | `5` | Maximum delivery retry attempts for transient errors. |
-| `KAFKA_PRODUCER_TIMEOUT_MS` | `number` | `30000` | Kafka socket and request timeout in milliseconds. |
-| `PORT` | `number` | `3000` | HTTP server port for the dashboard and SSE stream. |
+Start your Kafka environment separately, then configure this project with an address it can reach:
 
-> **Note on Dry-Run Mode:** If `KAFKA_PRODUCER_ENABLED=false`, the collector operates in dry-run mode: it polls Last.fm, deduplicates events, logs messages, and streams them to the UI via SSE, but skips Kafka network socket transmission.
+```env
+KAFKA_PRODUCER_ENABLED=true
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_TOPIC=lastfm.scrobbles
+KAFKA_CLIENT_ID=lastfm-collector-producer
+```
 
----
+Restart the application after changing the configuration.
 
-## 5. Kafka Message Schema (`KafkaScrobbleEvent`)
+The correct broker address depends on where each application is running:
 
-Messages are published as serialized JSON UTF-8 strings. The message key is set to `user.username` to ensure that all events for a given listener route to the same Kafka partition, preserving chronological ordering.
+| Collector location | Kafka location | Typical broker address |
+| --- | --- | --- |
+| Local machine | Same local machine | `localhost:9092` |
+| Docker container | Host machine | `host.docker.internal:9092` |
+| Docker network | Container in the same network | `kafka:9092` |
 
-### Sample Kafka Message Payload:
+To inspect the published events using the Kafka CLI:
+
+```bash
+kafka-console-consumer \
+  --bootstrap-server localhost:9092 \
+  --topic lastfm.scrobbles \
+  --from-beginning
+```
+
+## Event format
+
+Events are serialized as JSON. The Last.fm username is used as the Kafka message key so that events for the same listener are routed to the same partition.
+
 ```json
 {
   "eventId": "lastfm-rj-1710000000-0",
@@ -129,10 +163,7 @@ Messages are published as serialized JSON UTF-8 strings. The message key is set 
   "schemaVersion": "1.0.0",
   "timestamp": 1710000000000,
   "user": {
-    "username": "rj",
-    "realName": "Richard Jones",
-    "country": "United Kingdom",
-    "playcount": 128450
+    "username": "rj"
   },
   "track": {
     "name": "Myth",
@@ -140,160 +171,80 @@ Messages are published as serialized JSON UTF-8 strings. The message key is set 
     "album": "Bloom",
     "mbid": "60a4b75a-38bb-4eb9-b883-7c3858c16053",
     "url": "https://www.last.fm/music/Beach+House/_/Myth",
-    "nowPlaying": false,
-    "tags": ["dream pop", "indie", "shoegaze"]
+    "nowPlaying": false
   },
   "metadata": {
-    "source": "lastfm-collector",
-    "collectorVersion": "1.0.0",
+    "source": "lastfm",
     "ingestedAt": 1710000005120
   }
 }
 ```
 
-### Event Types:
-- `TRACK_NOW_PLAYING`: Emitted when a listener starts playback of a track (Last.fm `@attr.nowplaying = true`).
-- `TRACK_SCROBBLED`: Emitted when a track playback has concluded and has been recorded to the user's permanent scrobble history with an official UTC timestamp.
+### Event types
 
-### Downstream Consumer Partitioning Strategy:
-- **Partition Key:** `user.username`
-- **Guarantees:** In-order delivery per user across partition consumers.
-- **Consumer Group Sizing:** Scale consumer partitions based on the size of your active user pool.
+- `TRACK_NOW_PLAYING`: represents the current playback reported by Last.fm. It does not include a permanent scrobble timestamp.
+- `TRACK_SCROBBLED`: represents a track recorded in the user's listening history with a Last.fm timestamp.
 
----
+`TRACK_NOW_PLAYING` and `TRACK_SCROBBLED` describe different stages of a listening session and may both be emitted for the same track.
 
-## 6. Error Handling & Operational Resilience
+## Polling and deduplication
 
-1. **HTTP 429 & Last.fm Rate Limiting:**
-   Last.fm limits requests to approximately 5 queries/sec per API key. If the API returns HTTP 429 or status `29` (Rate limit exceeded), `LastFmClient` activates a 15-second cool-down backoff and exponential retry loop before resuming polls.
+Last.fm does not provide a native continuous event stream for this use case. The collector creates a near-real-time feed by polling `user.getRecentTracks` at a configurable interval.
 
-2. **Deduplication:**
-   Polling an active user every few seconds could result in retrieving the same currently playing track multiple times. The `EventDeduplicator` creates a composite key (`username:artist:track:timestamp:nowPlaying`) stored in a bounded in-memory ring buffer (10,000 keys) to ensure events are published to Kafka exactly once per state transition.
+Because consecutive responses can contain the same records, the application keeps a bounded in-memory set of event identifiers. Events already seen during the current process are not emitted again.
 
-3. **Kafka Connection Resiliency:**
-   `KafkaScrobbleProducer` handles broker disconnections gracefully. If Kafka is unavailable at startup or during temporary network interruptions, the producer logs warnings with structured metadata and attempts reconnection with configurable retries, without crashing the HTTP server.
+This strategy has two important limitations:
 
-4. **Graceful Shutdown:**
-   Upon receiving `SIGINT` or `SIGTERM`, the collector halts the polling timer, flushes in-flight Kafka producer batches, disconnects the Kafka client cleanly, and closes active SSE listener streams.
+- Deduplication state is lost when the application restarts.
+- Multiple collector instances do not share deduplication state.
 
----
+Persistent or distributed deduplication should be implemented downstream if stronger delivery guarantees are required.
 
-## 7. Operational Modes: Dry-Run vs. External Kafka Cluster
+## Understanding `now playing`
 
-### Mode 1: Dry-Run Mode (Default)
-In dry-run mode, the collector:
-- Connects to the real Last.fm Audioscrobbler API using `LASTFM_API_KEY`.
-- Continuously polls real playback from monitored users (e.g. `LASTFM_USERS=cdessana`).
-- Performs deduplication to eliminate repeated polls of the same track.
-- Formats each scrobble into a validated `KafkaScrobbleEvent` JSON object.
-- Logs the collected events to structured JSON logs.
-- Streams events to the browser dashboard via Server-Sent Events (`/api/stream`).
-- **Skips all network socket calls to Apache Kafka.** No Kafka brokers are contacted or required.
+The dashboard shows an event history, not a single mutable playback state. Older `TRACK_NOW_PLAYING` events remain visible after a newer track arrives because events are append-only.
 
-Configuration for Dry-Run Mode:
-```env
-LASTFM_API_KEY="<your-lastfm-api-key>"
-LASTFM_USERS="cdessana"
-KAFKA_PRODUCER_ENABLED=false
-```
+Consumers that need one current track per user should maintain keyed state using the username and apply an expiration policy. Completed `TRACK_SCROBBLED` events should be treated as historical facts.
 
----
+## Error handling and shutdown
 
-### Mode 2: Switching to an External Kafka Cluster
-When your external Kafka cluster is running (in your separate Kafka learning project):
+The collector handles Last.fm API errors, invalid responses and rate-limit responses explicitly. Kafka connection and publishing failures are logged rather than replaced with fake data.
 
-1. **Verify your Kafka broker endpoint and topic:**
-   Ensure the topic exists or topic auto-creation is enabled on your brokers:
-   ```bash
-   # Example check using Kafka CLI in your Kafka project directory:
-   kafka-topics --bootstrap-server localhost:9092 --list
-   ```
+On `SIGINT` or `SIGTERM`, the application stops polling, closes active SSE connections and disconnects the Kafka producer.
 
-2. **Update your environment variables in `.env`:**
-   ```env
-   # Enable Kafka transmission:
-   KAFKA_PRODUCER_ENABLED=true
+## Development
 
-   # Point to your external broker(s):
-   KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
+Run the available project checks before submitting changes:
 
-   # Set the destination topic:
-   KAFKA_TOPIC="lastfm.scrobbles"
-
-   # Client ID identifying this producer:
-   KAFKA_CLIENT_ID="lastfm-collector-producer"
-   ```
-
-3. **Restart the collector:**
-   ```bash
-   npm run dev
-   ```
-   The engine will initialize `KafkaScrobbleProducer`, connect to `KAFKA_BOOTSTRAP_SERVERS`, and publish each deduplicated scrobble using `user.username` as the partition key.
-
-4. **Verify incoming messages with a Kafka consumer:**
-   In your separate Kafka environment:
-   ```bash
-   kafka-console-consumer --bootstrap-server localhost:9092 --topic lastfm.scrobbles --from-beginning
-   ```
-
----
-
-## 8. Ingestion Semantics & Known Behavior: Concurrent "Now Playing" Events
-
-### Observed Behavior
-In the stream and web dashboard, it is possible to observe more than one track marked as `"Now Playing"` (`isNowPlaying: true`) for the same user, even when the user is only listening on a single physical device.
-
----
-
-### Technical Root Causes
-
-1. **Event Streaming (Immutable Log) vs. State Storage:**
-   - Apache Kafka and this collector operate on an **append-only immutable event stream** model.
-   - When **Track A** begins playback, a `TRACK_NOW_PLAYING` event is emitted.
-   - When the user advances or skips to **Track B**, a new `TRACK_NOW_PLAYING` event is emitted.
-   - In a pure event stream, historical events are not retroactively mutated or deleted. Without a downstream state store (e.g., a `KTable` in Kafka Streams or a materialized view in Flink), both events remain in the raw event history.
-
-2. **Last.fm's Dual Representation of Songs:**
-   - Last.fm represents playback in two distinct formats:
-     - **Active Playback:** `@attr.nowplaying = "true"`, without a UTC timestamp.
-     - **Completed Scrobble:** An entry containing a permanent `date.uts` UNIX timestamp once recorded.
-   - Because they represent different moments in time, they generate different event IDs:
-     - `nowplaying:{user}:{artist}:{track}`
-     - `scrobble:{user}:{uts}:{artist}:{track}`
-   - The arrival of a completed scrobble event does not retroactively remove or mutate the preceding `nowplaying` event in an append-only event stream.
-
-3. **In-Memory Buffer & Dashboard Accumulation:**
-   - The local inspection feed (`scrobbleBuffer` in `server.ts` and `useScrobbleStream.ts` in the UI) currently acts as a raw FIFO queue of emitted events.
-   - It appends each incoming event to the view without collapsing or reconciling active playback per user account.
-
-4. **Polling Deduplication Interplay:**
-   - When Spotify or Last.fm scrobbles a track midway through playback, Last.fm's API returns both the completed scrobble and the active `nowplaying` flag for the same track in the same response payload.
-   - If the deduplicator clears the active listening session when processing the completed scrobble, the adjacent `nowplaying` entry can be re-evaluated as a fresh listening session on subsequent polling cycles.
-
----
-
-### Recommended Patterns for Downstream Kafka Consumers
-
-If your downstream architecture requires a single, authoritative "Current Playback" status per user:
-
-* **Use Keyed State Stores (`KTable` or Flink State):**
-  Consume from the topic using the partition key `user.username`. Maintain a state store where any newer event for a username updates the active track state.
-* **Treat `TRACK_NOW_PLAYING` as Ephemeral State:**
-  Consider `TRACK_NOW_PLAYING` events as heartbeat status signals with an expiration window (e.g., TTL of track duration or 5 minutes).
-* **Treat `TRACK_SCROBBLED` as Fact Records:**
-  Store `TRACK_SCROBBLED` events in append-only storage (e.g., data warehouse or analytics store) as immutable historical records.
-
----
-
-## 9. Development & Verification
-
-### Running Linter & Typecheck:
 ```bash
 npm run lint
+npm run build
 ```
 
-### Production Build:
+To run the production build:
+
 ```bash
-npm run build
 npm start
 ```
+
+## Current scope
+
+This repository focuses on collection and publication. It intentionally does not include:
+
+- Kafka broker provisioning
+- Topic management
+- Kafka consumers
+- Stream processing
+- Persistent storage
+- Analytics pipelines
+
+Those concerns can evolve independently in the separate Kafka learning project.
+
+## Possible next steps
+
+- Add automated tests for event transformation, deduplication and configuration validation.
+- Add event schema validation and compatibility checks.
+- Add metrics for polling latency, API errors and Kafka delivery failures.
+- Define a persistent deduplication strategy if restart-safe delivery becomes necessary.
+- Build consumers with Kafka Streams, Apache Flink or Apache Spark.
+
