@@ -1,0 +1,6 @@
+{
+  "name": "Last.fm Real-Time Scrobble Stream",
+  "description": "Standalone Last.fm real-time data collector and Apache Kafka producer streaming live scrobbles, playback events, and artist stream monitoring with real API data and event deduplication.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
