@@ -248,3 +248,23 @@ Those concerns can evolve independently in the separate Kafka learning project.
 - Define a persistent deduplication strategy if restart-safe delivery becomes necessary.
 - Build consumers with Kafka Streams, Apache Flink or Apache Spark.
 
+## Last.fm data and attribution
+
+This project retrieves listening data through the [Last.fm API](https://www.last.fm/api).
+
+The MIT License included in this repository applies only to the source code.
+Last.fm data, trademarks, logos, images, album artwork, and other third-party
+content are not covered by this project's license.
+
+Users are responsible for complying with the
+[Last.fm API Terms of Service](https://www.last.fm/api/tos), including any
+requirements concerning attribution, privacy, storage, redistribution,
+rate limits, and commercial or academic use.
+
+This repository does not include collected listening data, Last.fm API
+credentials, or a dataset derived from Last.fm.
+
+Last.fm is a trademark of its respective owner. This project is an independent
+educational project and is not affiliated with, endorsed by, or sponsored by
+Last.fm.
+
